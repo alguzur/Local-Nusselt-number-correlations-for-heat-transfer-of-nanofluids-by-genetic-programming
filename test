@@ -1,0 +1,402 @@
+%%%% Deriving local Nusselt number correlations for heat transfer of nanofluids by genetic programming 
+%%%% Authors: Alexander Guzman-Urbina, Kazuki Fukushima, Tomoya Tsukada, Hajime Ohno, and Yasuhiro Fukushima
+%%%%%%%%%Department of Chemical Engineering, Graduate School of Engineering, Tohoku University, 6-6-07 Aramaki-Aza Aoba, Sendai, Japan
+%%%%%%%%%Department of Frontier Science for Advanced Environment, Graduate School of Environmental Studies, Tohoku University, 6-6-07 Aramaki-Aza Aoba, Sendai, Japan
+"""
+必要なパッケージ
+"""
+
+# 標準
+import operator
+import random
+import time
+from multiprocessing import Pool, freeze_support
+
+# 追加
+import numpy as np
+from deap import algorithms, base, creator, gp, tools
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+from sklearn.model_selection import train_test_split
+import tmy
+import pandas as pd
+
+"""
+GPのノードで使う関数
+"""
+
+
+def protected_div(left, right):
+    np.seterr(over="ignore", divide="ignore", invalid="ignore")
+    if abs(left) > 10 ** 8:
+        if left > 0:
+            left = 10 ** 8
+        else:
+            left = - 10 ** 8
+    if abs(right) > 10 ** 8:
+        if right > 0:
+            right = 10 ** 8
+        else:
+            right = - 10 ** 8
+    try:
+        result = np.divide(left, right)
+        if np.isnan(result):
+            result = 10 ** 8
+        elif abs(result) > 10 ** 8:
+            if result < 0:
+                result = - 10 ** 8
+            else:
+                result = 10 ** 8
+    except ZeroDivisionError:
+        if left < 0:
+            result = - 10 ** 8
+        else:
+            result = 10 ** 8
+    return np.float64(result)
+
+
+def protected_pow(left, right):
+    np.seterr(over="ignore", divide="ignore", invalid="ignore")
+    if abs(left) > 10 ** 8:
+        if left > 0:
+            left = 10 ** 8
+        else:
+            left = - 10 ** 8
+    if abs(right) > 10 ** 8:
+        if right > 0:
+            right = 10 ** 8
+        else:
+            right = - 10 ** 8
+    # overflowを防ぐため
+    if abs(left) < 1:
+        if right >= 10 ** 8:
+            return 0
+    elif abs(left) > 1:
+        if right >= 10 ** 8:
+            return 10 ** 8
+    right = float(right)
+    a = np.power(left, right)
+    # 複素数を含む場合を排除するため
+    if type(a) is complex:
+        return 10 ** 8
+    elif np.isinf(a) or np.isnan(a):
+        return 10 ** 8
+    else:
+        return np.float64(a)
+
+
+def protected_mul(left, right):
+    np.seterr(over="ignore", divide="ignore", invalid="ignore")
+    if abs(left) > 10 ** 8:
+        if left > 0:
+            left = 10 ** 8
+        else:
+            left = - 10 ** 8
+    if abs(right) > 10 ** 8:
+        if right > 0:
+            right = 10 ** 8
+        else:
+            right = - 10 ** 8
+    result = np.multiply(left, right)
+    if abs(result) > 10 ** 8:
+        if result < 0:
+            result = - 10 ** 8
+        else:
+            result = 10 ** 8
+    return np.float64(result)
+
+
+def protected_sub(left, right):
+    np.seterr(over="ignore", divide="ignore", invalid="ignore")
+    result = np.subtract(left, right)
+    if abs(result) > 10 ** 8:
+        if result < 0:
+            result = -10 ** 8
+        else:
+            result = 10 ** 8
+    elif np.isnan(result):
+        result = 10 ** 8
+    return np.float64(result)
+
+
+def protected_ln(value):
+    np.seterr(over="ignore", divide="ignore", invalid="ignore")
+    if not value:
+        result = -10 ** 8
+    else:
+        result = np.log(abs(value))
+        if abs(result) > 10 ** 8:
+            result = 10 ** 8
+        elif np.isnan(value):
+            result = 10 ** 8
+    return np.float64(result)
+
+
+"""
+評価関数
+"""
+
+
+def mae_eval(individual):
+    n_data = x_train.shape[0]
+    n_features = x_train.shape[1]
+    func = toolbox.compile(expr=individual)
+    feat = [x_train[:, i] for i in range(n_features)]
+    y_train_predicted = [func(feat[0][i], feat[1][i], feat[2][i])
+                         for i in range(n_data)]
+    y_train_predicted = np.array(y_train_predicted)
+    mae = mean_absolute_error(y_train, y_train_predicted)
+    return mae,
+
+
+def rmse_eval(individual):
+    n_data = x_train.shape[0]
+    n_features = x_train.shape[1]
+    func = toolbox.compile(expr=individual)
+    feat = [x_train[:, i] for i in range(n_features)]
+    y_train_predicted = [func(feat[0][i], feat[1][i], feat[2][i], feat[3][i])
+                         for i in range(n_data)]
+    y_train_predicted = np.array(y_train_predicted)
+    rmse = np.sqrt(mean_squared_error(y_train, y_train_predicted))
+    return rmse,
+
+
+def r2_eval(individual):
+    n_data = x_train.shape[0]
+    n_features = x_train.shape[1]
+    func = toolbox.compile(expr=individual)
+    feat = [x_train[:, i] for i in range(n_features)]
+    y_train_predicted = [func(feat[0][i], feat[1][i], feat[2][i])
+                         for i in range(n_data)]
+    y_train_predicted = np.array(y_train_predicted)
+    r2 = r2_score(y_train, y_train_predicted)
+    return r2,
+
+
+def mape_eval(individual):
+    n_data = x_train.shape[0]
+    n_features = x_train.shape[1]
+    func = toolbox.compile(expr=individual)
+    feat = [x_train[:, i] for i in range(n_features)]
+    y_train_predicted = [func(feat[0][i], feat[1][i], feat[2][i])
+                         for i in range(n_data)]
+    y_train_predicted = np.array(y_train_predicted)
+    mape = np.mean(np.abs((y_train_predicted - y_train) / y_train)) * 100
+    return mape,
+
+
+def rmspe_eval(individual):
+    n_data = x_train.shape[0]
+    n_features = x_train.shape[1]
+    func = toolbox.compile(expr=individual)
+    feat = [x_train[:, i] for i in range(n_features)]
+    y_train_predicted = [func(feat[0][i], feat[1][i], feat[2][i], feat[3][i])
+                         for i in range(n_data)]
+    y_train_predicted = np.array(y_train_predicted)
+    rmspe = np.sqrt(np.mean(((y_train_predicted - y_train) / y_train) ** 2)) * 100
+    return rmspe,
+
+# def mae_eval(individual):
+#     n_data = x_train.shape[0]
+#     n_features = x_train.shape[1]
+#     func = toolbox.compile(expr=individual)
+#     feat = [x_train[:, i] for i in range(n_features)]
+#     y_train_predicted = [func(feat[0][i], feat[1][i])
+#                          for i in range(n_data)]
+#     y_train_predicted = np.array(y_train_predicted)
+#     mae = mean_absolute_error(y_train, y_train_predicted)
+#     return mae,
+#
+#
+# def rmse_eval(individual):
+#     n_data = x_train.shape[0]
+#     n_features = x_train.shape[1]
+#     func = toolbox.compile(expr=individual)
+#     feat = [x_train[:, i] for i in range(n_features)]
+#     y_train_predicted = [func(feat[0][i], feat[1][i])
+#                          for i in range(n_data)]
+#     y_train_predicted = np.array(y_train_predicted)
+#     rmse = np.sqrt(mean_squared_error(y_train, y_train_predicted))
+#     return rmse,
+#
+#
+# def r2_eval(individual):
+#     n_data = x_train.shape[0]
+#     n_features = x_train.shape[1]
+#     func = toolbox.compile(expr=individual)
+#     feat = [x_train[:, i] for i in range(n_features)]
+#     y_train_predicted = [func(feat[0][i], feat[1][i])
+#                          for i in range(n_data)]
+#     y_train_predicted = np.array(y_train_predicted)
+#     r2 = r2_score(y_train, y_train_predicted)
+#     return r2,
+#
+#
+# def mape_eval(individual):
+#     n_data = x_train.shape[0]
+#     n_features = x_train.shape[1]
+#     func = toolbox.compile(expr=individual)
+#     feat = [x_train[:, i] for i in range(n_features)]
+#     y_train_predicted = [func(feat[0][i], feat[1][i])
+#                          for i in range(n_data)]
+#     y_train_predicted = np.array(y_train_predicted)
+#     mape = np.mean(np.abs((y_train_predicted - y_train) / y_train)) * 100
+#     return mape,
+#
+#
+# def rmspe_eval(individual):
+#     n_data = x_train.shape[0]
+#     n_features = x_train.shape[1]
+#     func = toolbox.compile(expr=individual)
+#     feat = [x_train[:, i] for i in range(n_features)]
+#     y_train_predicted = [func(feat[0][i], feat[1][i])
+#                          for i in range(n_data)]
+#     y_train_predicted = np.array(y_train_predicted)
+#     rmspe = np.sqrt(np.mean(((y_train_predicted - y_train) / y_train) ** 2)) * 100
+#     return rmspe,
+
+"""
+データ関係
+"""
+# csvファイルの選択
+csv_file = "dataset_overone.csv"
+
+
+# データセット、特徴量とターゲットに分割
+dataset = pd.read_csv(csv_file, index_col=0)
+x, y = dataset.iloc[:, 2:2 + 4].values, dataset.iloc[:, 8].values
+
+# 訓練データとテストデータに分割
+x_train, x_test, y_train, y_test = train_test_split(x, y, train_size=0.85,
+                                                    random_state=10)
+
+"""
+GP
+"""
+# GPの設定
+# funclist = ("add", "sub", "mul", "div", "pow")
+funclist = ("add", "mul", "div", "pow")
+variables = ("phi", "X", "Re", "Pr")
+# variables = ("phi", "X")
+# 特徴量の種類
+n_feature = len(variables)
+pset = gp.PrimitiveSet("MAIN", n_feature)
+# 関数を追加
+primitive = {"add": np.add, "sub": protected_sub, "mul": protected_mul,
+             "div": protected_div, "pow": protected_pow, "ln": protected_ln}
+funcarg = {"add": 2, "sub": 2, "mul": 2, "div": 2, "pow": 2, "ln": 1}
+for func in funclist:
+    pset.addPrimitive(primitive[func], funcarg[func], func)
+# 定数を追加
+pset.addEphemeralConstant("rand101", lambda: round(random.uniform(0, 100), 2))
+# 変数名の変更
+pset.renameArguments(ARG0=variables[0])
+pset.renameArguments(ARG1=variables[1])
+pset.renameArguments(ARG2=variables[2])
+pset.renameArguments(ARG3=variables[3])
+
+# 適合度が小さくなるようにするもの、-1は個体の適合度との比較用の値
+creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
+creator.create("Individual", gp.PrimitiveTree, fitness=creator.FitnessMin)
+
+# toolboxの作成
+# max depth of GP
+toolbox = base.Toolbox()
+toolbox.register("expr", gp.genHalfAndHalf, pset=pset, min_=1, max_=2)
+toolbox.register("individual", tools.initIterate,
+                 creator.Individual, toolbox.expr)
+toolbox.register("population", tools.initRepeat,
+                 list, toolbox.individual)
+toolbox.register("compile", gp.compile, pset=pset)
+
+# fitness function
+toolbox.register("evaluate", rmspe_eval)
+toolbox.register("select", tools.selTournament, tournsize=10)
+
+# treeの制約、交叉や突然変異で最大深さがdepthになるようにした
+depth = 3
+toolbox.register("expr_mut", gp.genHalfAndHalf, min_=0, max_=depth)
+toolbox.register("mutate", gp.mutUniform, expr=toolbox.expr_mut, pset=pset)
+toolbox.register("mate", gp.cxOnePoint)
+toolbox.decorate("mate", gp.staticLimit(key=operator.attrgetter("height"),
+                                        max_value=depth))
+toolbox.decorate("mutate", gp.staticLimit(key=operator.attrgetter("height"),
+                                          max_value=depth))
+
+if __name__ == "__main__":
+
+    # depth_tuple = (3, 4, 5, 6)
+    # depth_tuple = (4, 6)
+    # for j in depth_tuple:
+
+    freeze_support()
+    n, g, = 1500, 3000
+    pc, pm = 0.8, 0.1
+    eval_method = "RMSPE"
+    processes = 30
+    pool = Pool(processes=processes)
+    toolbox.register("map", pool.map)
+    loop = 1
+    for i in range(loop):
+        num_rec = i+30
+        pop = toolbox.population(n=n)
+        hof = tools.HallOfFame(1)
+        # 結果のlogに表示される統計の値
+        stats_fit = tools.Statistics(lambda ind: ind.fitness.values)
+        stats_size = tools.Statistics(len)
+        mstats = tools.MultiStatistics(fitness=stats_fit, size=stats_size)
+        mstats.register("avg", np.mean)
+        mstats.register("std", np.std)
+        mstats.register("min", np.min)
+        mstats.register("max", np.max)
+        # 計算スタート時間
+        time1 = time.time()
+        # 計算アルゴリズム
+        pop, log = algorithms.eaSimple(pop, toolbox, pc, pm, g, stats=mstats,
+                                       halloffame=hof, verbose=True)
+        # 計算終了時間
+        time2 = time.time()
+        # 経過時間を表示
+        cal_time = time2 - time1
+
+        # logをcsvに記録する用のデータ
+        gen_rec = log.select("gen")
+        fit_rec = log.chapters["fitness"].select("min")
+        size_min = log.chapters["size"].select("min")
+        size_max = log.chapters["size"].select("max")
+        size_avg = log.chapters["size"].select("avg")
+        size_rec = {"min": size_min, "max": size_max, "avg": size_avg}
+
+        # 最も適合度が優秀だったものの式
+        expr = tools.selBest(pop, 1)[0]
+        s_exp = gp.PrimitiveTree(expr)
+
+        best_fit = expr.fitness.values[0]
+        """
+        S-Expression to Equation
+        S式で表現されるので、式を計算で使う場合は
+        一般的な式の形に変換する必要がある
+        ex) add(x, y) --> (x + y)
+        """
+        eq = tmy.slash_func(s_exp, variables)
+        complexity = tmy.cal_complex(eq, variables)
+        eq = tmy.make_equation(eq)[0]
+        # 簡素化
+        simple_eq = tmy.simple_equation(eq, variables)
+        # 式に訓練データ、テストデータを代入
+
+        # y_train_predicted = tmy.subs_to_eq(eq, variables, x_train)
+        # y_test_predicted = tmy.subs_to_eq(eq, variables, x_test)
+
+        # フォルダーの選択
+        folder_excel = 'excel/overone_3'.format(depth)
+        folder_pdf = 'pdf/overone_3'.format(depth)
+        record_excel_dic = {
+            "folder_path": folder_excel, "n": n, "g": g, "depth": depth,
+            "pc": pc, "pm": pm, "cal_time": cal_time, "s_exp": s_exp,
+            "eq": simple_eq, "sim_eq": eq, "best_fit": best_fit, "gen_rec": gen_rec,
+            "fit_rec": fit_rec, "size_rec": size_rec, "num_rec": num_rec,
+            "eval_method": eval_method, "x_train": x_train, "y_train": y_train,
+            "x_test": x_test, "y_test": y_test, "variables": variables, "complexity": complexity
+        }
+        tmy.record_excel(**record_excel_dic)
+        tmy.record_pdf(expr, folder_pdf, num_rec)
